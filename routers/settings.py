@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import re
-from datetime import date, datetime, timezone
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from db import SessionLocal
-from models import StoreSettings, StoreNotificationTarget
+from models import StoreSettings
 
 router = APIRouter(tags=["settings"])
 
@@ -23,134 +19,78 @@ def get_db():
         db.close()
 
 
-# ---------- Helpers ----------
-
-SUPPORTED_WA_EVENTS = {"order/created", "order/paid", "order/fulfilled"}
-DEFAULT_WA_EVENTS = ["order/paid"]
-
-
-def normalize_whatsapp_phone(raw: str) -> str:
-    """
-    Normaliza e valida telefone no formato E.164:
-    Ex: +5511999999999
-
-    - Remove espaços, parênteses, hífens, etc.
-    - Exige que comece com '+'
-    - Valida comprimento (8 a 15 dígitos após '+')
-    """
-    s = raw.strip()
-    s = re.sub(r"[^\d+]", "", s)
-
-    if not s.startswith("+"):
-        raise ValueError("Telefone deve estar no formato E.164, ex: +5511999999999")
-
-    if not re.fullmatch(r"\+\d{8,15}", s):
-        raise ValueError("Telefone inválido. Use E.164, ex: +5511999999999")
-
-    return s
-
-
-def coerce_events(value: Any) -> list[str]:
-    """
-    Garante que o campo de eventos seja uma lista válida.
-    """
-    if value is None:
-        return DEFAULT_WA_EVENTS.copy()
-
-    if not isinstance(value, list):
-        raise ValueError('whatsapp_events_enabled deve ser uma lista, ex: ["order/paid"]')
-
-    events: list[str] = []
-    for e in value:
-        if not isinstance(e, str):
-            raise ValueError("Todos os eventos devem ser strings.")
-        events.append(e)
-
-    invalid = [e for e in events if e not in SUPPORTED_WA_EVENTS]
-    if invalid:
-        raise ValueError(f"Eventos inválidos: {invalid}. Permitidos: {sorted(SUPPORTED_WA_EVENTS)}")
-
-    return events
-
-
 def get_or_create_store_settings(db: Session, store_id: str) -> StoreSettings:
     row = db.execute(select(StoreSettings).where(StoreSettings.store_id == store_id)).scalars().first()
     if row:
-        # compat: se existir mas estiver vazio/nulo, força default
-        try:
-            if not getattr(row, "whatsapp_events_enabled", None):
-                row.whatsapp_events_enabled = DEFAULT_WA_EVENTS.copy()
-                db.commit()
-                db.refresh(row)
-        except Exception:
-            # Se por algum motivo a coluna ainda não existir no schema,
-            # não vamos quebrar o GET.
-            pass
-
         return row
 
-    # cria usando defaults do banco (server_default) e defaults do app quando necessário
-    row = StoreSettings(store_id=store_id)
-    # se seu model já tiver server_default ['order/paid'], isso aqui é redundante,
-    # mas mantém consistência mesmo em ambientes sem migration/ddl perfeito.
-    try:
-        row.whatsapp_events_enabled = DEFAULT_WA_EVENTS.copy()
-    except Exception:
-        pass
-
+    row = StoreSettings(store_id=store_id)  # defaults via server_default
     db.add(row)
     db.commit()
     db.refresh(row)
     return row
 
 
-# ---------- Store Settings (global) ----------
+# ---------- Schemas ----------
 
 class StoreSettingsOut(BaseModel):
     store_id: str
     plan: str
-    max_targets: int
-    monthly_message_limit: int
-    monthly_message_used: int
-    usage_month: date
+    is_active: bool
 
-    whatsapp_phone: str | None = None
-    whatsapp_events_enabled: list[str] = Field(default_factory=lambda: DEFAULT_WA_EVENTS.copy())
+    display_mode_strategy: str = Field(description="auto | manual")
+    display_mode_window: str = Field(description="last_1h | last_24h | last_7d | last_30d")
+
+    minimum_sales_to_display: int
+
+    show_on_product_page: bool
+    show_on_cart_page: bool
+
+    position: str = Field(description="below_price | above_buy_button | below_buy_button | custom_selector")
+    custom_selector: str | None
+
+    text_template: str
+    locale: str
 
 
 class StoreSettingsPatch(BaseModel):
     plan: str | None = None
-    max_targets: int | None = None
-    monthly_message_limit: int | None = None
+    is_active: bool | None = None
 
-    # ✅ NOVOS CAMPOS
-    whatsapp_phone: str | None = Field(
-        default=None,
-        description="Telefone do WhatsApp do seller em E.164. Ex: +5511999999999. Use string vazia para limpar.",
-    )
-    whatsapp_events_enabled: list[str] | None = Field(
-        default=None,
-        description='Eventos habilitados. Ex: ["order/paid","order/fulfilled"].',
-    )
+    display_mode_strategy: str | None = Field(default=None, description="auto | manual")
+    display_mode_window: str | None = Field(default=None, description="last_1h | last_24h | last_7d | last_30d")
 
+    minimum_sales_to_display: int | None = None
+
+    show_on_product_page: bool | None = None
+    show_on_cart_page: bool | None = None
+
+    position: str | None = Field(default=None, description="below_price | above_buy_button | below_buy_button | custom_selector")
+    custom_selector: str | None = None
+
+    text_template: str | None = None
+    locale: str | None = None
+
+
+# ---------- Endpoints ----------
 
 @router.get("/stores/{store_id}/settings", response_model=StoreSettingsOut)
 def get_store_settings(store_id: str, db: Session = Depends(get_db)):
     row = get_or_create_store_settings(db, store_id)
 
-    # compat segura caso a coluna ainda não exista (ou esteja nula)
-    events = getattr(row, "whatsapp_events_enabled", None) or DEFAULT_WA_EVENTS.copy()
-    phone = getattr(row, "whatsapp_phone", None)
-
     return StoreSettingsOut(
         store_id=row.store_id,
         plan=row.plan,
-        max_targets=row.max_targets,
-        monthly_message_limit=row.monthly_message_limit,
-        monthly_message_used=row.monthly_message_used,
-        usage_month=row.usage_month,
-        whatsapp_phone=phone,
-        whatsapp_events_enabled=events,
+        is_active=row.is_active,
+        display_mode_strategy=row.display_mode_strategy,
+        display_mode_window=row.display_mode_window,
+        minimum_sales_to_display=row.minimum_sales_to_display,
+        show_on_product_page=row.show_on_product_page,
+        show_on_cart_page=row.show_on_cart_page,
+        position=row.position,
+        custom_selector=row.custom_selector,
+        text_template=row.text_template,
+        locale=row.locale,
     )
 
 
@@ -161,155 +101,83 @@ def patch_store_settings(store_id: str, body: StoreSettingsPatch, db: Session = 
     if body.plan is not None:
         row.plan = body.plan
 
-    if body.max_targets is not None:
-        if body.max_targets < 1:
-            raise HTTPException(400, "max_targets must be >= 1")
-        row.max_targets = body.max_targets
+    if body.is_active is not None:
+        row.is_active = body.is_active
 
-    if body.monthly_message_limit is not None:
-        if body.monthly_message_limit < 0:
-            raise HTTPException(400, "monthly_message_limit must be >= 0")
-        row.monthly_message_limit = body.monthly_message_limit
+    if body.display_mode_strategy is not None:
+        if body.display_mode_strategy not in ("auto", "manual"):
+            raise HTTPException(422, "display_mode_strategy must be 'auto' or 'manual'")
+        row.display_mode_strategy = body.display_mode_strategy
 
-    # ----- WhatsApp settings -----
-    if body.whatsapp_phone is not None:
-        if body.whatsapp_phone == "":
-            # permitir limpar
-            row.whatsapp_phone = None
+    if body.display_mode_window is not None:
+        if body.display_mode_window not in ("last_1h", "last_24h", "last_7d", "last_30d"):
+            raise HTTPException(422, "display_mode_window must be one of last_1h|last_24h|last_7d|last_30d")
+        row.display_mode_window = body.display_mode_window
+
+    if body.minimum_sales_to_display is not None:
+        if body.minimum_sales_to_display < 1:
+            raise HTTPException(422, "minimum_sales_to_display must be >= 1")
+        row.minimum_sales_to_display = body.minimum_sales_to_display
+
+    if body.show_on_product_page is not None:
+        row.show_on_product_page = body.show_on_product_page
+
+    if body.show_on_cart_page is not None:
+        row.show_on_cart_page = body.show_on_cart_page
+
+    if body.position is not None:
+        if body.position not in ("below_price", "above_buy_button", "below_buy_button", "custom_selector"):
+            raise HTTPException(422, "position invalid")
+        row.position = body.position
+
+    # custom_selector só faz sentido quando position=custom_selector
+    if body.custom_selector is not None:
+        if row.position != "custom_selector":
+            raise HTTPException(422, "custom_selector can only be set when position='custom_selector'")
+        if body.custom_selector.strip() == "":
+            row.custom_selector = None
         else:
-            try:
-                row.whatsapp_phone = normalize_whatsapp_phone(body.whatsapp_phone)
-            except ValueError as e:
-                raise HTTPException(422, str(e))
+            row.custom_selector = body.custom_selector.strip()
 
-    if body.whatsapp_events_enabled is not None:
-        try:
-            row.whatsapp_events_enabled = coerce_events(body.whatsapp_events_enabled)
-        except ValueError as e:
-            raise HTTPException(422, str(e))
+    if body.text_template is not None:
+        if "{count}" not in body.text_template or "{period}" not in body.text_template:
+            raise HTTPException(422, "text_template must include {count} and {period}")
+        row.text_template = body.text_template
+
+    if body.locale is not None:
+        row.locale = body.locale
 
     db.commit()
     db.refresh(row)
 
-    events = getattr(row, "whatsapp_events_enabled", None) or DEFAULT_WA_EVENTS.copy()
-    phone = getattr(row, "whatsapp_phone", None)
-
     return StoreSettingsOut(
         store_id=row.store_id,
         plan=row.plan,
-        max_targets=row.max_targets,
-        monthly_message_limit=row.monthly_message_limit,
-        monthly_message_used=row.monthly_message_used,
-        usage_month=row.usage_month,
-        whatsapp_phone=phone,
-        whatsapp_events_enabled=events,
+        is_active=row.is_active,
+        display_mode_strategy=row.display_mode_strategy,
+        display_mode_window=row.display_mode_window,
+        minimum_sales_to_display=row.minimum_sales_to_display,
+        show_on_product_page=row.show_on_product_page,
+        show_on_cart_page=row.show_on_cart_page,
+        position=row.position,
+        custom_selector=row.custom_selector,
+        text_template=row.text_template,
+        locale=row.locale,
     )
+
+
+@router.put("/stores/{store_id}/settings", response_model=StoreSettingsOut)
+def put_store_settings(store_id: str, body: StoreSettingsPatch, db: Session = Depends(get_db)):
+    # Compat: reaproveita PATCH (atualiza apenas campos enviados)
+    return patch_store_settings(store_id=store_id, body=body, db=db)
 
 
 @router.delete("/stores/{store_id}/settings")
 def delete_store_settings(store_id: str, db: Session = Depends(get_db)):
-    """
-    Remove a linha de settings da loja.
-    No próximo GET /settings, ela será recriada com defaults.
-    """
     row = db.execute(select(StoreSettings).where(StoreSettings.store_id == store_id)).scalars().first()
     if not row:
         raise HTTPException(404, "Store settings not found")
 
     db.execute(delete(StoreSettings).where(StoreSettings.store_id == store_id))
-    db.commit()
-    return {"ok": True}
-
-
-# ---------- Notification Targets (numbers) ----------
-
-class TargetIn(BaseModel):
-    phone_e164: str
-    notify_order_created: bool = True
-    notify_order_paid: bool = True
-    notify_order_sent: bool = True
-
-
-class TargetUpdate(BaseModel):
-    phone_e164: str | None = None
-    notify_order_created: bool | None = None
-    notify_order_paid: bool | None = None
-    notify_order_sent: bool | None = None
-
-
-@router.get("/stores/{store_id}/targets")
-def list_targets(store_id: str, db: Session = Depends(get_db)):
-    rows = db.execute(
-        select(StoreNotificationTarget)
-        .where(StoreNotificationTarget.store_id == store_id)
-        .where(StoreNotificationTarget.deleted_at.is_(None))
-        .order_by(StoreNotificationTarget.created_at.asc())
-    ).scalars().all()
-
-    return [
-        {
-            "id": r.id,
-            "store_id": r.store_id,
-            "phone_e164": r.phone_e164,
-            "notify_order_created": r.notify_order_created,
-            "notify_order_paid": r.notify_order_paid,
-            "notify_order_sent": r.notify_order_sent,
-            "created_at": r.created_at,
-            "updated_at": r.updated_at,
-        }
-        for r in rows
-    ]
-
-
-@router.post("/stores/{store_id}/targets")
-def create_target(store_id: str, body: TargetIn, db: Session = Depends(get_db)):
-    settings = get_or_create_store_settings(db, store_id)
-
-    active_count = db.execute(
-        select(func.count())
-        .select_from(StoreNotificationTarget)
-        .where(StoreNotificationTarget.store_id == store_id)
-        .where(StoreNotificationTarget.deleted_at.is_(None))
-    ).scalar_one()
-
-    if active_count >= settings.max_targets:
-        raise HTTPException(400, f"Max targets reached ({settings.max_targets}).")
-
-    target = StoreNotificationTarget(
-        store_id=store_id,
-        phone_e164=body.phone_e164,
-        notify_order_created=body.notify_order_created,
-        notify_order_paid=body.notify_order_paid,
-        notify_order_sent=body.notify_order_sent,
-    )
-    db.add(target)
-    db.commit()
-    db.refresh(target)
-
-    return {"ok": True, "id": target.id}
-
-
-@router.put("/stores/{store_id}/settings", response_model=StoreSettingsOut)
-def put_store_settings(store_id: str, body: StoreSettingsPatch, db: Session = Depends(get_db)):
-    """
-    Compat: mantém o PUT antigo, reaproveitando a mesma lógica do PATCH.
-    (Atualiza apenas os campos enviados no body.)
-    """
-    return patch_store_settings(store_id=store_id, body=body, db=db)
-
-
-@router.delete("/stores/{store_id}/targets/{target_id}")
-def delete_target(store_id: str, target_id: int, db: Session = Depends(get_db)):
-    target = db.execute(
-        select(StoreNotificationTarget)
-        .where(StoreNotificationTarget.id == target_id)
-        .where(StoreNotificationTarget.store_id == store_id)
-        .where(StoreNotificationTarget.deleted_at.is_(None))
-    ).scalars().first()
-
-    if not target:
-        raise HTTPException(404, "Target not found")
-
-    target.deleted_at = datetime.now(timezone.utc)
     db.commit()
     return {"ok": True}
