@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -10,18 +11,17 @@ from sqlalchemy.orm import Session
 from models import OrderPaidItem, ProductSalesBucket
 from services.orders import parse_api_datetime
 
+BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 def hour_bucket_start(dt: datetime) -> datetime:
-    dt = dt.astimezone(timezone.utc)
+    dt = dt.astimezone(BRAZIL_TZ)
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
-
 def day_bucket_start(dt: datetime) -> datetime:
-    dt = dt.astimezone(timezone.utc)
+    dt = dt.astimezone(BRAZIL_TZ)
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-
 
 
 def extract_paid_items_from_order(order_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -64,9 +64,12 @@ def extract_paid_items_from_order(order_payload: dict[str, Any]) -> list[dict[st
     return items
 
 
-
 def rebuild_product_buckets_for_store(db: Session, store_id: str) -> None:
-    db.execute(delete(ProductSalesBucket).where(ProductSalesBucket.store_id == store_id))
+    db.flush()
+
+    db.execute(
+        delete(ProductSalesBucket).where(ProductSalesBucket.store_id == store_id)
+    )
 
     items = db.execute(
         select(OrderPaidItem).where(OrderPaidItem.store_id == store_id)
@@ -74,8 +77,8 @@ def rebuild_product_buckets_for_store(db: Session, store_id: str) -> None:
 
     grouped: dict[tuple[str, str, str, datetime], int] = defaultdict(int)
     for item in items:
-        grouped[(store_id, item.product_id, "hour", hour_bucket_start(item.paid_at))] += item.quantity
-        grouped[(store_id, item.product_id, "day", day_bucket_start(item.paid_at))] += item.quantity
+        grouped[(store_id, item.product_id, "hour", hour_bucket_start(item.paid_at))] += int(item.quantity or 0)
+        grouped[(store_id, item.product_id, "day", day_bucket_start(item.paid_at))] += int(item.quantity or 0)
 
     for (bucket_store_id, product_id, granularity, bucket_start), sales_count in grouped.items():
         db.add(
@@ -88,6 +91,7 @@ def rebuild_product_buckets_for_store(db: Session, store_id: str) -> None:
             )
         )
 
+    db.flush()
 
 
 def replace_order_paid_items(
@@ -129,7 +133,7 @@ def get_product_sales_count_for_period(
     count_mode: str = "product",
     variant_id: str | None = None,
 ) -> int:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(BRAZIL_TZ)
 
     if count_mode == "variant":
         if not variant_id:
@@ -154,8 +158,8 @@ def get_product_sales_count_for_period(
         .where(ProductSalesBucket.bucket_start >= starts_at)
         .where(ProductSalesBucket.bucket_start <= now)
     ).scalars().all()
-    return sum(int(bucket.sales_count or 0) for bucket in buckets)
 
+    return sum(int(bucket.sales_count or 0) for bucket in buckets)
 
 
 def _period_starts_at(now: datetime, period: str) -> datetime:
@@ -168,7 +172,6 @@ def _period_starts_at(now: datetime, period: str) -> datetime:
     raise ValueError(f"Unsupported period: {period}")
 
 
-
 def _bucket_query_window(now: datetime, period: str) -> tuple[str, datetime]:
     if period == "24h":
         return "hour", hour_bucket_start(now - timedelta(hours=23))
@@ -177,7 +180,6 @@ def _bucket_query_window(now: datetime, period: str) -> tuple[str, datetime]:
     if period == "30d":
         return "day", day_bucket_start(now - timedelta(days=29))
     raise ValueError(f"Unsupported period: {period}")
-
 
 
 def render_sales_message(template: str, count: int, period: str) -> str:
