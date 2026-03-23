@@ -1,7 +1,10 @@
 import os
 import secrets
 from datetime import datetime, timezone
+<<<<<<< HEAD
 
+=======
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -10,14 +13,23 @@ from sqlalchemy.orm import Session
 
 from db import SessionLocal
 from models import StoreInstallation, StoreSettings
+<<<<<<< HEAD
 from services.bootstrap import bootstrap_paid_orders_for_store
 
 router = APIRouter(tags=["oauth"])
 
+=======
+
+router = APIRouter(tags=["oauth"])
+
+load_dotenv()
+
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
 APP_ID = os.getenv("APP_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+<<<<<<< HEAD
 API_BASE = os.getenv("TIENDANUBE_API_BASE", "https://api.tiendanube.com/2025-03")
 USER_AGENT = os.getenv("USER_AGENT", "Nuvemshop Social Proof (contato@exemplo.com)")
 WEBHOOK_ORDERS_URL = os.getenv("WEBHOOK_ORDERS_URL") or (
@@ -39,6 +51,36 @@ if not APP_ID or not CLIENT_SECRET or not REDIRECT_URI:
 AUTH_URL = f"https://www.tiendanube.com/apps/{APP_ID}/authorize"
 TOKEN_URL = "https://www.tiendanube.com/apps/authorize/token"
 STATE_STORE: set[str] = set()
+=======
+
+API_BASE = "https://api.tiendanube.com/2025-03"
+
+AUTH_URL = f"https://www.tiendanube.com/apps/{APP_ID}/authorize"
+TOKEN_URL = "https://www.tiendanube.com/apps/authorize/token"
+
+# Webhooks
+WEBHOOK_ORDERS_URL = os.getenv("WEBHOOK_ORDERS_URL") or (
+    f"{PUBLIC_BASE_URL}/webhooks/orders" if PUBLIC_BASE_URL else
+    "https://icebound-hollowly-rea.ngrok-free.dev/webhooks/orders"
+)
+
+WEBHOOK_APP_SUSPENDED_URL = os.getenv("WEBHOOK_APP_SUSPENDED_URL") or (
+    f"{PUBLIC_BASE_URL}/webhooks/app/suspended" if PUBLIC_BASE_URL else
+    "https://icebound-hollowly-rea.ngrok-free.dev/webhooks/app/suspended"
+)
+
+WEBHOOK_APP_RESUMED_URL = os.getenv("WEBHOOK_APP_RESUMED_URL") or (
+    f"{PUBLIC_BASE_URL}/webhooks/app/resumed" if PUBLIC_BASE_URL else
+    "https://icebound-hollowly-rea.ngrok-free.dev/webhooks/app/resumed"
+)
+
+WEBHOOK_SUBSCRIPTION_UPDATED_URL = os.getenv("WEBHOOK_SUBSCRIPTION_UPDATED_URL") or (
+    f"{PUBLIC_BASE_URL}/webhooks/subscription/updated" if PUBLIC_BASE_URL else
+    "https://icebound-hollowly-rea.ngrok-free.dev/webhooks/subscription/updated"
+)
+
+USER_AGENT = os.getenv("USER_AGENT") or f"Nuvemshop Social Proof ({APP_ID})"
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
 
 
 async def ensure_webhook(store_id: str, access_token: str, event: str, url: str) -> dict:
@@ -50,6 +92,10 @@ async def ensure_webhook(store_id: str, access_token: str, event: str, url: str)
     base = f"{API_BASE}/{store_id}/webhooks"
 
     async with httpx.AsyncClient(timeout=25) as client:
+<<<<<<< HEAD
+=======
+        # Lista (filtrando por url ajuda a reduzir payload)
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
         r = await client.get(base, headers=headers, params={"url": url})
         if r.status_code != 200:
             return {"status": "check_failed", "http_status": r.status_code, "body": r.text}
@@ -68,6 +114,17 @@ async def ensure_webhook(store_id: str, access_token: str, event: str, url: str)
 
         return {"status": "created", "data": r2.json()}
 
+<<<<<<< HEAD
+
+=======
+
+if not APP_ID or not CLIENT_SECRET or not REDIRECT_URI:
+    raise RuntimeError("Faltou configurar APP_ID, CLIENT_SECRET e/ou REDIRECT_URI no .env")
+
+
+# DEV: state em memória (em produção, Redis/DB)
+STATE_STORE: set[str] = set()
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
 
 
 def get_db():
@@ -83,6 +140,7 @@ def install():
     state = secrets.token_urlsafe(24)
     STATE_STORE.add(state)
     return RedirectResponse(f"{AUTH_URL}?state={state}", status_code=302)
+
 
 
 @router.get("/oauth/callback")
@@ -111,19 +169,25 @@ async def oauth_callback(code: str | None = None, state: str | None = None, db: 
     store_id = str(data["user_id"])
     scope = data.get("scope")
 
-    active = db.execute(
-        select(StoreInstallation)
-        .where(StoreInstallation.store_id == store_id)
-        .where(StoreInstallation.deleted_at.is_(None))
-        .order_by(StoreInstallation.created_at.desc())
-        .limit(1)
-    ).scalars().first()
-
+    # Desativa instalação anterior (se existir)
+    active = (
+        db.execute(
+            select(StoreInstallation)
+            .where(StoreInstallation.store_id == store_id)
+            .where(StoreInstallation.deleted_at.is_(None))
+            .order_by(StoreInstallation.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
     if active:
         active.deleted_at = datetime.now(timezone.utc)
 
+    # Cria nova instalação
     db.add(StoreInstallation(store_id=store_id, access_token=access_token, scope=scope))
 
+<<<<<<< HEAD
     settings = db.execute(select(StoreSettings).where(StoreSettings.store_id == store_id)).scalars().first()
     if not settings:
         db.add(StoreSettings(store_id=store_id))
@@ -141,6 +205,29 @@ async def oauth_callback(code: str | None = None, state: str | None = None, db: 
         access_token=access_token,
         user_agent=USER_AGENT,
         days=30,
+=======
+    # Garante StoreSettings (agora SEM campos de WhatsApp)
+    settings = db.execute(select(StoreSettings).where(StoreSettings.store_id == store_id)).scalars().first()
+    if not settings:
+        # server_defaults do model já cuidam do resto
+        db.add(StoreSettings(store_id=store_id))
+
+    # Salva no banco ANTES de mexer com webhooks externos
+    db.commit()
+
+    # Webhooks de pedidos (pro pipeline de buckets)
+    wh_order_paid = await ensure_webhook(store_id, access_token, "order/paid", WEBHOOK_ORDERS_URL)
+
+    # (Opcional) se você for usar para alguma rotina futura:
+    # wh_order_created = await ensure_webhook(store_id, access_token, "order/created", WEBHOOK_ORDERS_URL)
+    # wh_order_fulfilled = await ensure_webhook(store_id, access_token, "order/fulfilled", WEBHOOK_ORDERS_URL)
+
+    # Webhooks para Billing API (se você já estiver usando billing)
+    wh_app_suspended = await ensure_webhook(store_id, access_token, "app/suspended", WEBHOOK_APP_SUSPENDED_URL)
+    wh_app_resumed = await ensure_webhook(store_id, access_token, "app/resumed", WEBHOOK_APP_RESUMED_URL)
+    wh_subscription_updated = await ensure_webhook(
+        store_id, access_token, "subscription/updated", WEBHOOK_SUBSCRIPTION_UPDATED_URL
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
     )
 
     return {
@@ -154,4 +241,8 @@ async def oauth_callback(code: str | None = None, state: str | None = None, db: 
             "app_resumed": wh_app_resumed,
             "subscription_updated": wh_subscription_updated,
         },
+<<<<<<< HEAD
     }
+=======
+    }
+>>>>>>> 2b0b6827a9596f2791e6bbe9448959c8a4b0d5c2
