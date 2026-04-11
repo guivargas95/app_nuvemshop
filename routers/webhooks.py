@@ -6,10 +6,13 @@ from db import SessionLocal
 from models import OrderSnapshot, StoreInstallation, WebhookLog
 from routers.oauth import USER_AGENT
 from services.orders import fetch_order_snapshot
-from services.sales_counter import extract_paid_items_from_order, rebuild_product_buckets_for_store, replace_order_paid_items
+from services.sales_counter import (
+    extract_paid_items_from_order,
+    rebuild_product_buckets_for_store,
+    replace_order_paid_items,
+)
 
 router = APIRouter(tags=["webhooks"])
-
 
 
 def get_db():
@@ -63,11 +66,11 @@ async def orders_webhook(payload: dict, db: Session = Depends(get_db)):
             items=items,
             source="webhook",
         )
+        db.flush()
         rebuild_product_buckets_for_store(db, store_id)
 
     db.commit()
     return {"ok": True}
-
 
 
 def _safe_resource_id(payload: dict) -> str:
